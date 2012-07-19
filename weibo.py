@@ -12,8 +12,6 @@ import base64
 import hashlib
 
 
-
-
 class Cache(object):
     def __init__(self, default_expires= 60*60*24-1):
         self.default_expires = default_expires # 默认失效时间, 默认4个小时
@@ -61,7 +59,26 @@ def _request(method, url, data=None, handlers=None, addheaders=None):
         data = None
     return opener.open(url, data)
 
-class WeiboOauth(object):
+def js_now():
+    return int(time.time()*1000)
+
+
+class WeiboOauthError(Exception):
+    pass
+
+
+class WeiboAPIError(Exception):
+    def __init__(self, info):
+        self.info = info
+        data = json.loads(info)
+        self.error_code = data.get('error_code')
+        self.request = data.get('request')
+        self.error = data.get('error')
+
+    def __str__(self):
+        return '[%s in %s] %s'%(self.error_code, self.request, self.error)
+
+class WeiboOauth2(object):
     APP_KEY = ''
     APP_SECRET = ''
     REDIRECT_URI = ''
@@ -128,7 +145,11 @@ class WeiboOauth(object):
         }
         u = _request('GET', url, params)
         data = u.read()[len(callback)+1: -2]
-        return json.loads(data)
+        data = json.loads(data)
+
+        if data.get('retcode') not in (0, '0'):
+            raise WeiboOauthError('Error occurred in Login:%s'%data.get('reason',''))
+        return data
 
     def _authorize(self, login_data):
         url = 'https://api.weibo.com/oauth2/authorize'
@@ -193,23 +214,13 @@ class WeiboOauth(object):
         return self._access_token_by_authorization_code(data)
     
 
-def js_now():
-    return int(time.time()*1000)
 
-class WeiboAPIError(Exception):
-    def __init__(self, info):
-        self.info = info
-        data = json.loads(info)
-        self.error_code = data.get('error_code')
-        self.request = data.get('request')
-        self.error = data.get('error')
 
-    def __str__(self):
-        return '[%s in %s] %s'%(self.error_code, self.request, self.error)
 
 
 class WeiboClient(object):
     cache = Cache()
+    oauthClass = WeiboOauth2
     def __init__(self, username, password, host='https://api.weibo.com/2/'):
         self.username = username
         self.password = password
@@ -218,13 +229,15 @@ class WeiboClient(object):
     def login(self):
         data = self.cache.get(self.username)
         if not data:
-            data = WeiboOauth(self.username, self.password).authorize()
+            data = self.oauthClass(self.username, self.password).authorize()
             self.cache.set(self.username, data , expires=data['expires_in'])
         self.token = data['access_token']
         self.expires_in = data['expires_in']
         self.uid = data['uid']
 
     def request(self, method, path, data=None):
+        if not getattr(self, 'uid', None):
+            self.login()
         url = self.host.rstrip('/') + '/' + path.lstrip('/')
         addheaders = [('Authorization', 'OAuth2 %s'%self.token)]
         try:
@@ -239,6 +252,5 @@ class WeiboClient(object):
 
     def post(self, path, params=None):
         return self.request('POST', path, params)
-
 
 
